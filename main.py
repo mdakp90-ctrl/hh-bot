@@ -1,108 +1,97 @@
 import asyncio
-import logging
 import os
+import time
+from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
+from fastapi import FastAPI
 
-from db.database import init_db
-from handlers.llm_settings import router as llm_router
-from handlers.profile import router as profile_router
-from handlers.search_settings import router as search_router
-from handlers.start import router as start_router
-from handlers.user_registration import router as user_registration_router
-from handlers.vacancies import router as vacancies_router
+from handlers import setup_handlers
+from services.hh_service import send_daily_vacancies
 
-# Цвета ANSI
-GREEN = "\033[92m"
-RED = "\03[91m"
-RESET = "\033[0m"
-
-# Символы для Windows-совместимости
-SUCCESS = "[OK]"
-ERROR = "[ERROR]"
-
+# Загружаем переменные окружения из файла .env
 load_dotenv()
-BOT_TOKEN: str = os.getenv("BOT_TOKEN") or ""
-if not BOT_TOKEN:
-    print(f"{RED}{ERROR} BOT_TOKEN не задан в .env{RESET}")
-    raise ValueError("❌ BOT_TOKEN не задан в .env")
 
-logging.basicConfig(level=logging.INFO)
+# Глобальные переменные для управления ресурсами (можно обернуть в класс, но для простоты — так)
+bot: Bot | None = None
+dp: Dispatcher | None = None
+scheduler: AsyncIOScheduler | None = None
 
-async def main():
-    print(f"{GREEN}{SUCCESS} Инициализация базы данных...{RESET}")
-    if not await init_db():
-        print(f"{RED}{ERROR} Не удалось инициализировать базу данных{RESET}")
+
+async def set_webhook(bot_instance: Bot):
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        print("⚠️ WEBHOOK_URL не установлен, пропускаю установку webhook'а")
         return
-    
-    print(f"{GREEN}{SUCCESS} Создание бота...{RESET}")
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(start_router)
-    dp.include_router(user_registration_router)
-    dp.include_router(profile_router)
-    dp.include_router(search_router)
-    dp.include_router(vacancies_router)
-    dp.include_router(llm_router)
-    
-    print(f"{GREEN}{SUCCESS} Бот запущен!{RESET}")
-    await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    # Удаляем старый webhook (на всякий случай)
+    await bot_instance.delete_webhook(drop_pending_updates=True)
+    time.sleep(0.5)
+    # Устанавливаем новый
+    await bot_instance.set_webhook(url=webhook_url, allowed_updates=dp.resolve_used_update_types())
+    print("✅ Webhook установлен на:", webhook_url)
 
-def create_vacancy_card(vacancy, page_num, total_pages):
-    """
-    Формирует текст карточки вакансии и клавиатуру.
-    vacancy: словарь с данными вакансии.
-    page_num: текущая страница.
-    total_pages: общее количество страниц.
-    """
 
-    # Формируем текст карточки
-    title = vacancy.get('name', 'Не указано')
-    employer = vacancy.get('employer', {}).get('name', 'Не указана')
-    area = vacancy.get('area', {}).get('name', 'Не указан')
-    salary = vacancy.get('salary')
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global bot, dp, scheduler
 
-    # Формируем строку зарплаты
-    if salary and salary.get('from'):
-        salary_str = f"от {salary['from']} {'руб.' if salary.get('currency') == 'RUR' else salary.get('currency', '')}"
-    elif salary and salary.get('to'):
-        salary_str = f"до {salary['to']} {'руб.' if salary.get('currency') == 'RUR' else salary.get('currency', '')}"
+    # === STARTUP ===
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("BOT_TOKEN is missing!")
+
+    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher()
+    setup_handlers(dp)
+
+    # Устанавливаем webhook, если указан WEBHOOK_URL
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if webhook_url:
+        await set_webhook(bot)
+        # В режиме webhook polling НЕ запускаем!
+        polling_task = None
+        print("🚀 Запущен в режиме webhook")
     else:
-        salary_str = "-"
+        # Иначе — запускаем polling
+        polling_task = asyncio.create_task(dp.start_polling(bot))
+        print("▶️ Starting Telegram bot polling...")
 
-    # Формируем текст сообщения
-    text = (
-        f"💼 {title}\n"
-        f"🏢 {employer}\n"
-        f"📍 {area}\n"
-        f"💰 {salary_str}\n"
-        f"[Открыть]({vacancy.get('alternate_url', '#')})"
-    )
+    # Планировщик запускаем в любом режиме
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(send_daily_vacancies, CronTrigger(hour=9, minute=0), args=[bot])
+    scheduler.start()
+    print("🗓️ Daily vacancy scheduler started")
 
-    # Создаем клавиатуру для одной вакансии
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="📄 Резюме", callback_data=f"resume_{vacancy.get('id')}"),
-        InlineKeyboardButton(text="✉️ Cover letter", callback_data=f"cover_{vacancy.get('id')}"),
-        InlineKeyboardButton(text="❌ Неинтересно", callback_data=f"skip_{vacancy.get('id')}")
-    )
+    yield
 
-    # Добавляем навигацию внизу (если нужно, можно сделать отдельным сообщением)
-    # Но в вашем случае, судя по изображению, навигация отдельно
-    nav_builder = InlineKeyboardBuilder()
-    nav_builder.row(
-        InlineKeyboardButton(text="◀️ Назад", callback_data=f"prev_{page_num}"),
-        InlineKeyboardButton(text=f"{page_num}/{total_pages}", callback_data="noop"),
-        InlineKeyboardButton(text="▶️ Вперёд", callback_data=f"next_{page_num}")
-    )
+    # === SHUTDOWN ===
+    print("⏹️ Shutting down...")
+    if scheduler:
+        scheduler.shutdown(wait=False)
+    if polling_task:
+        polling_task.cancel()
+        try:
+            await polling_task
+        except asyncio.CancelledError:
+            pass
+    if bot:
+        await bot.session.close()
 
-    return text, builder.as_markup(), nav_builder.as_markup()
+    print("✅ Shutdown complete")
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/")
+async def health():
+    return {"status": "alive", "bot": "hh-job-bot"}
+
+
+# Убираем блок if __name__ == "__main__" — запуск только через uvicorn!

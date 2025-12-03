@@ -1,6 +1,7 @@
 import asyncio
-import asyncpg
 from urllib.parse import urlparse
+
+import psycopg
 
 # Укажите ваш реальный URL
 DATABASE_URL = "postgresql://postgres:ProjectHH@db.dsuiaexiyrcbuqjmzdby.supabase.co:5432/postgres"
@@ -14,15 +15,15 @@ print(f"  База: {parsed.path[1:]}")
 
 async def test_connection():
     try:
-        conn = await asyncpg.connect(
+        conn = await psycopg.AsyncConnection.connect(
             host=parsed.hostname,
             port=parsed.port or 5432,
             user=parsed.username,
             password=parsed.password,
             database=parsed.path[1:],
         )
-        print("✅ Подключение к Supabase успешно!")
-        await conn.close()
+        async with conn:
+            print("✅ Подключение к Supabase успешно!")
     except Exception as e:
         print("❌ Ошибка подключения:", e)
 

@@ -55,7 +55,7 @@ async def get_vacancies_from_hh(user_id=None):
 def format_vacancy(vac, vacancy_number, total_vacancies):
     vacancy_name = vac.get('name', 'Без названия')
     company_name = vac['employer'].get('name', 'Не указано')
-    salary_from = vac['salary'].get('from', 'Не указана')
+    salary_from = vac.get('salary', {}).get('from') or 'Не указана'
     city = vac['area'].get('name', 'Не указан')
     url = vac.get('alternate_url', '#')
 
@@ -155,62 +155,67 @@ router = Router()
 
 @router.message(Command("vacancies"))
 async def show_vacancies(message: types.Message, bot: Bot):
+    user_id = message.from_user.id
+    print(f"🔍 Received /vacancies from user {user_id}")
     if not message.from_user:
         await message.answer("Не удалось получить информацию о пользователе.")
         return
-    user_id = message.from_user.id
     if not message.chat:
         await message.answer("Не удалось получить информацию о чате.")
         return
     chat_id = message.chat.id
 
     # Получаем фильтры пользователя
-    user_filters = await get_search_filters(user_id)
-    if not user_filters or not user_filters.get("city"):
-        await message.answer("⚠️ Город не указан. Пожалуйста, задайте его через /settings.")
-        return
-
-    # Проверяем, что город может быть преобразован в area_id
-    from services.hh_service import CITY_TO_AREA_ID
-    city = user_filters.get("city")
-    if city is None:
-        await message.answer("⚠️ Город не указан. Пожалуйста, задайте его через /settings.")
-        return
-
-    area_id = CITY_TO_AREA_ID.get(city)
-    if area_id is None:
-        await message.answer(f"⚠️ Город '{city}' не поддерживается. Пожалуйста, выберите поддерживаемый город через /settings.")
-        return
-
-    # Получаем вакансии
     try:
+        user_filters = await get_search_filters(user_id)
+        if not user_filters or not user_filters.get("city"):
+            print(f"⚠️ City not specified for user {user_id}")
+            await message.answer("⚠️ Город не указан. Пожалуйста, задайте его через /settings.")
+            return
+
+        # Проверяем, что город может быть преобразован в area_id
+        from services.hh_service import CITY_TO_AREA_ID
+        city = user_filters.get("city")
+        if city is None:
+            print(f"⚠️ City not specified for user {user_id}")
+            await message.answer("⚠️ Город не указан. Пожалуйста, задайте его через /settings.")
+            return
+
+        area_id = CITY_TO_AREA_ID.get(city)
+        if area_id is None:
+            print(f"⚠️ Unsupported city '{city}' for user {user_id}")
+            await message.answer(f"⚠️ Город '{city}' не поддерживается. Пожалуйста, выберите поддерживаемый город через /settings.")
+            return
+
+        # Получаем вакансии
         vacancies = await get_vacancies_from_hh(user_id)
-    except Exception:
-        await message.answer("Произошла ошибка при получении вакансий. Пожалуйста, попробуйте позже.")
-        return
-    if not vacancies:
-        await message.answer("Вакансий не найдено.")
-        return
+        print(f"💼 Found {len(vacancies)} vacancies for user {user_id}")
+        if not vacancies:
+            await message.answer("Вакансий не найдено.")
+            return
 
-    # PAGE_SIZE = 5
-    # total_pages = (len(vacancies) + PAGE_SIZE - 1) // PAGE_SIZE # ceil(100/5) = 20
-    PAGE_SIZE = 5
-    total_pages = (len(vacancies) + PAGE_SIZE - 1) // PAGE_SIZE # Динамически вычисляем количество страниц
+        # PAGE_SIZE = 5
+        # total_pages = (len(vacancies) + PAGE_SIZE - 1) // PAGE_SIZE # ceil(100/5) = 20
+        PAGE_SIZE = 5
+        total_pages = (len(vacancies) + PAGE_SIZE - 1) // PAGE_SIZE # Динамически вычисляем количество страниц
 
-    def get_page_vacancies(page_num: int):
-        start = (page_num - 1) * PAGE_SIZE
-        end = start + PAGE_SIZE
-        return vacancies[start:end]
+        def get_page_vacancies(page_num: int):
+            start = (page_num - 1) * PAGE_SIZE
+            end = start + PAGE_SIZE
+            return vacancies[start:end]
 
-    # Сохраняем данные пользователя
-    user_pages[user_id] = {
-        'vacancies': vacancies,
-        'current_page': 1,  # Меняем на 1 для 1-индексации
-        'total_pages': total_pages
-    }
+        # Сохраняем данные пользователя
+        user_pages[user_id] = {
+            'vacancies': vacancies,
+            'current_page': 1,  # Меняем на 1 для 1-индексации
+            'total_pages': total_pages
+        }
 
-    # Отправляем первую страницу
-    await send_page(message, 1, user_pages[user_id])
+        # Отправляем первую страницу
+        await send_page(message, 1, user_pages[user_id])
+    except Exception as e:
+        print(f"❌ Error in /vacancies for user {user_id}: {e}")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
 
         
 # --- Новый обработчик для навигации по страницам по заданию ---
