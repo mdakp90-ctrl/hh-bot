@@ -1,6 +1,6 @@
 import os
 
-import psycopg
+import asyncpg
 from dotenv import load_dotenv
 
 # Цвета ANSI
@@ -14,6 +14,8 @@ ERROR = "[ERROR]"
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL:
+    pass
 
 async def init_db():
     if not DATABASE_URL:
@@ -21,7 +23,7 @@ async def init_db():
         return False
 
     try:
-        conn = await psycopg.AsyncConnection.connect(DATABASE_URL)
+        conn = await asyncpg.connect(DATABASE_URL)
         async with conn:
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (

@@ -2,7 +2,6 @@
 import asyncio
 import os
 
-import psycopg
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения

@@ -1,8 +1,6 @@
 import asyncio
 from urllib.parse import urlparse
 
-import psycopg
-
 # Укажите ваш реальный URL
 DATABASE_URL = "postgresql://postgres:ProjectHH@db.dsuiaexiyrcbuqjmzdby.supabase.co:5432/postgres"
 
